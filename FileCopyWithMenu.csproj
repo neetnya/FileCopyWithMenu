@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>FileCopyWithMenu</AssemblyName>
+    <RootNamespace>FileCopyWithMenu</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyTitle>目录树复制工具</AssemblyTitle>
+    <Product>FileCopyWithMenu</Product>
+    <Version>1.0.0</Version>
+    <Company>local</Company>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <EnableDefaultItems>true</EnableDefaultItems>
+    <DebugType>none</DebugType>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>CS1591</NoWarn>
+  </PropertyGroup>
+
+</Project>

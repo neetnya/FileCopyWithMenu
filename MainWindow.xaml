@@ -1,0 +1,136 @@
+<Window x:Class="FileCopyWithMenu.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ctrl="clr-namespace:FileCopyWithMenu.Controls"
+        Title="目录树复制工具 · FileCopyWithMenu"
+        Height="800" Width="1340" MinHeight="580" MinWidth="1000"
+        Background="{StaticResource AppBgBrush}"
+        Foreground="{StaticResource TextPrimaryBrush}"
+        FontFamily="Microsoft YaHei UI, Segoe UI" FontSize="12.5"
+        TextOptions.TextFormattingMode="Display"
+        WindowStartupLocation="CenterScreen"
+        Loaded="Window_Loaded" Closing="Window_Closing">
+    <Grid Margin="10,8,10,8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="180" MinHeight="54" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- ============ 顶部：选项与提示 ============ -->
+        <Border Grid.Row="0" Background="{StaticResource CardBgBrush}" BorderBrush="{StaticResource CardBorderBrush}"
+                BorderThickness="1" CornerRadius="6" Padding="10,7" Margin="0,0,0,8">
+            <Grid>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="冲突时" Style="{StaticResource HintText}" Margin="0,0,6,0" />
+                    <ComboBox x:Name="PolicyBox" Width="104" SelectedIndex="0">
+                        <ComboBoxItem Content="覆盖" />
+                        <ComboBoxItem Content="跳过" />
+                        <ComboBoxItem Content="自动重命名" />
+                    </ComboBox>
+                    <Rectangle Width="1" Fill="{StaticResource CardBorderBrush}" Margin="12,3,12,3" />
+                    <CheckBox x:Name="ChkEmpty" Content="复制空文件夹" IsChecked="True" Margin="0,0,14,0"
+                              ToolTip="勾选：源目录里的空文件夹在目标目录里也会建出来（保证目录结构完整）&#x0a;不勾选：只建出最终含有文件的那些文件夹" />
+                    <CheckBox x:Name="ChkMeta" Content="保留时间戳" IsChecked="True" Margin="0,0,14,0"
+                              ToolTip="勾选：复制过去的文件沿用源文件的“修改时间/创建时间”，文件夹沿用源文件夹的修改时间&#x0a;不勾选：时间都变成复制这一刻（文件内容本身不受影响）" />
+                    <CheckBox x:Name="ChkRefresh" Content="完成后定位到目标" IsChecked="True" Margin="0,0,14,0"
+                              ToolTip="复制完成后，右侧树自动刷新并展开定位到第一个复制过去的条目" />
+                </StackPanel>
+                <TextBlock Style="{StaticResource HintText}" HorizontalAlignment="Right"
+                           Text="Ctrl / Shift 多选 · 双击或 ←/→ 展开折叠 · 选中后点中间 → 复制" />
+            </Grid>
+        </Border>
+
+        <!-- ============ 主体：左树 | 箭头 | 右树 ============ -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" MinWidth="280" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" MinWidth="280" />
+            </Grid.ColumnDefinitions>
+
+            <ctrl:TreePanel x:Name="LeftPanel" Grid.Column="0" IsSourcePanel="True" />
+
+            <Border Grid.Column="1" Width="104">
+                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                    <TextBlock x:Name="SelCountText" Text="未选择" HorizontalAlignment="Center"
+                               Style="{StaticResource HintText}" />
+                    <Button x:Name="CopyButton" Content="→" Style="{StaticResource ArrowButton}"
+                            Margin="0,10,0,10" Click="Copy_Click"
+                            ToolTip="把左侧选中项（含目录结构）复制到右侧目录（Ctrl+→）" />
+                    <TextBlock Text="复制到右侧" HorizontalAlignment="Center" Style="{StaticResource HintText}" />
+                    <TextBlock Text="Ctrl + →" HorizontalAlignment="Center" Style="{StaticResource HintText}"
+                               Margin="0,2,0,0" />
+                </StackPanel>
+            </Border>
+
+            <ctrl:TreePanel x:Name="RightPanel" Grid.Column="2" IsSourcePanel="False" />
+        </Grid>
+
+        <!-- ============ 分隔条 ============ -->
+        <GridSplitter Grid.Row="2" Height="6" HorizontalAlignment="Stretch" VerticalAlignment="Center"
+                      Background="Transparent" ResizeDirection="Rows" ResizeBehavior="PreviousAndNext"
+                      Margin="0,3,0,3" Cursor="SizeNS" />
+
+        <!-- ============ 日志 ============ -->
+        <Border Grid.Row="3" Background="{StaticResource CardBgBrush}" BorderBrush="{StaticResource CardBorderBrush}"
+                BorderThickness="1" CornerRadius="6">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <Grid Grid.Row="0" Margin="10,6,10,3">
+                    <TextBlock Text="日志" Style="{StaticResource PanelTitle}" />
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="清空" Padding="10,2" Click="ClearLog_Click" />
+                        <Button Content="打开目标目录" Padding="10,2" Margin="6,0,0,0" Click="OpenTarget_Click" />
+                        <Button Content="打开日志文件" Padding="10,2" Margin="6,0,0,0" Click="OpenLogFile_Click"
+                                ToolTip="打开 %APPDATA%\FileCopyWithMenu\error.log" />
+                    </StackPanel>
+                </Grid>
+                <ListBox x:Name="LogList" Grid.Row="1" Margin="6,0,6,6" BorderThickness="0"
+                         Background="{StaticResource SoftBgBrush}"
+                         ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                         VirtualizingPanel.IsVirtualizing="True"
+                         VirtualizingPanel.VirtualizationMode="Recycling">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding Display}" TextWrapping="NoWrap"
+                                       FontFamily="Consolas, Microsoft YaHei UI" FontSize="11.5">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsError}" Value="True">
+                                                <Setter Property="Foreground" Value="{StaticResource ErrorBrush}" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding IsOk}" Value="True">
+                                                <Setter Property="Foreground" Value="{StaticResource OkBrush}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </Grid>
+        </Border>
+
+        <!-- ============ 状态栏 ============ -->
+        <Grid Grid.Row="4" Margin="2,8,2,0">
+            <TextBlock x:Name="StatusText" Text="就绪" Style="{StaticResource HintText}" />
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <TextBlock x:Name="ProgressText" Style="{StaticResource HintText}" Margin="0,0,10,0"
+                           MaxWidth="420" TextTrimming="CharacterEllipsis" />
+                <ProgressBar x:Name="ProgressBar" Width="220" Height="14" Minimum="0" Maximum="100"
+                             Value="0" VerticalAlignment="Center" />
+                <Button x:Name="CancelButton" Content="取消复制" Padding="10,2" Margin="10,0,0,0"
+                        IsEnabled="False" Click="Cancel_Click" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

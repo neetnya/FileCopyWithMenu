@@ -4,7 +4,10 @@
              xmlns:core="clr-namespace:FileCopyWithMenu.Core"
              FontFamily="Microsoft YaHei UI, Segoe UI"
              FontSize="12.5"
-             Foreground="{StaticResource TextPrimaryBrush}">
+             Foreground="{StaticResource TextPrimaryBrush}"
+             AllowDrop="True"
+             PreviewDragOver="Panel_PreviewDragOver"
+             Drop="Panel_Drop">
     <UserControl.Resources>
 
         <!-- 展开箭头 -->
@@ -183,7 +186,7 @@
             <Grid Grid.Row="3">
                 <TreeView x:Name="Tree" Margin="6,0,4,8" Background="Transparent" BorderThickness="0"
                           ItemContainerStyle="{StaticResource NodeItemStyle}"
-                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                          ScrollViewer.HorizontalScrollBarVisibility="Auto"
                           ScrollViewer.VerticalScrollBarVisibility="Auto"
                           ScrollViewer.CanContentScroll="True"
                           VirtualizingPanel.IsVirtualizing="True"
@@ -193,12 +196,12 @@
                           ContextMenuOpening="Tree_ContextMenuOpening">
                     <TreeView.ContextMenu>
                         <ContextMenu>
-                            <!-- 索引 0 固定为“复制到右侧”，代码里按索引控制显隐 -->
-                            <MenuItem Header="复制到右侧    Ctrl+→" Click="MiCopy_Click" />
-                            <Separator />
+                            <MenuItem x:Name="MiCopy" Header="复制到右侧    Ctrl+→" Click="MiCopy_Click" />
+                            <Separator x:Name="MiCopySep" />
                             <MenuItem Header="展开 / 折叠" Click="MiToggle_Click" />
                             <MenuItem Header="展开整个子树" Click="MiExpandSubtree_Click" />
                             <Separator />
+                            <MenuItem Header="新建文件夹…" Click="MiNewFolder_Click" />
                             <MenuItem Header="用资源管理器打开" Click="MiOpen_Click" />
                             <MenuItem Header="复制完整路径" Click="MiCopyPath_Click" />
                             <Separator />
@@ -208,7 +211,7 @@
                     </TreeView.ContextMenu>
                 </TreeView>
                 <!-- 空状态提示：没有打开任何目录时显示 -->
-                <TextBlock x:Name="EmptyHint" Text="点【浏览…】选择目录"
+                <TextBlock x:Name="EmptyHint" Text="点【浏览…】或拖入文件夹"
                            HorizontalAlignment="Center" VerticalAlignment="Center"
                            Style="{StaticResource HintText}" IsHitTestVisible="False"
                            Visibility="Collapsed" />

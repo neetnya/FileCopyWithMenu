@@ -25,10 +25,11 @@
             <Grid>
                 <StackPanel Orientation="Horizontal">
                     <TextBlock Text="冲突时" Style="{StaticResource HintText}" Margin="0,0,6,0" />
-                    <ComboBox x:Name="PolicyBox" Width="104" SelectedIndex="0">
+                    <ComboBox x:Name="PolicyBox" Width="152" SelectedIndex="0">
                         <ComboBoxItem Content="覆盖" />
                         <ComboBoxItem Content="跳过" />
                         <ComboBoxItem Content="自动重命名" />
+                        <ComboBoxItem Content="仅覆盖较新/不同大小" />
                     </ComboBox>
                     <Rectangle Width="1" Fill="{StaticResource CardBorderBrush}" Margin="12,3,12,3" />
                     <CheckBox x:Name="ChkEmpty" Content="复制空文件夹" IsChecked="True" Margin="0,0,14,0"
@@ -39,7 +40,7 @@
                               ToolTip="复制完成后，右侧树自动刷新并展开定位到第一个复制过去的条目" />
                 </StackPanel>
                 <TextBlock Style="{StaticResource HintText}" HorizontalAlignment="Right"
-                           Text="Ctrl / Shift 多选 · 双击或 ←/→ 展开折叠 · 选中后点中间 → 复制" />
+                           Text="Ctrl / Shift 多选 · 支持拖入目录 · 选中后点中间 → 复制" />
             </Grid>
         </Border>
 
@@ -53,7 +54,7 @@
 
             <ctrl:TreePanel x:Name="LeftPanel" Grid.Column="0" IsSourcePanel="True" />
 
-            <Border Grid.Column="1" Width="104">
+            <Border Grid.Column="1" Width="108">
                 <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                     <TextBlock x:Name="SelCountText" Text="未选择" HorizontalAlignment="Center"
                                Style="{StaticResource HintText}" />
@@ -63,6 +64,8 @@
                     <TextBlock Text="复制到右侧" HorizontalAlignment="Center" Style="{StaticResource HintText}" />
                     <TextBlock Text="Ctrl + →" HorizontalAlignment="Center" Style="{StaticResource HintText}"
                                Margin="0,2,0,0" />
+                    <Button x:Name="SwapButton" Content="⇄ 交换" Padding="10,3" Margin="0,16,0,0"
+                            Click="Swap_Click" ToolTip="交换左右两侧的根目录" />
                 </StackPanel>
             </Border>
 
@@ -85,6 +88,11 @@
                 <Grid Grid.Row="0" Margin="10,6,10,3">
                     <TextBlock Text="日志" Style="{StaticResource PanelTitle}" />
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <CheckBox x:Name="ChkErrorOnly" Content="仅看错误" Margin="0,0,10,0"
+                                  Checked="LogFilter_Changed" Unchecked="LogFilter_Changed" />
+                        <Button x:Name="RetryButton" Content="重试失败项" Padding="10,2" Margin="0,0,6,0"
+                                IsEnabled="False" Click="RetryFailed_Click"
+                                ToolTip="重新复制上一次失败的文件" />
                         <Button Content="清空" Padding="10,2" Click="ClearLog_Click" />
                         <Button Content="打开目标目录" Padding="10,2" Margin="6,0,0,0" Click="OpenTarget_Click" />
                         <Button Content="打开日志文件" Padding="10,2" Margin="6,0,0,0" Click="OpenLogFile_Click"
@@ -125,7 +133,7 @@
             <TextBlock x:Name="StatusText" Text="就绪" Style="{StaticResource HintText}" />
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                 <TextBlock x:Name="ProgressText" Style="{StaticResource HintText}" Margin="0,0,10,0"
-                           MaxWidth="420" TextTrimming="CharacterEllipsis" />
+                           MaxWidth="460" TextTrimming="CharacterEllipsis" />
                 <ProgressBar x:Name="ProgressBar" Width="220" Height="14" Minimum="0" Maximum="100"
                              Value="0" VerticalAlignment="Center" />
                 <Button x:Name="CancelButton" Content="取消复制" Padding="10,2" Margin="10,0,0,0"

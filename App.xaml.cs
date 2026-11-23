@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Text;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -14,6 +15,11 @@ namespace FileCopyWithMenu
             DispatcherUnhandledException += OnUnhandledException;
             AppDomain.CurrentDomain.UnhandledException += (s, args) =>
                 WriteCrashLog(args.ExceptionObject as Exception, "AppDomain");
+            TaskScheduler.UnobservedTaskException += (s, args) =>
+            {
+                WriteCrashLog(args.Exception, "TaskScheduler");
+                args.SetObserved();
+            };
         }
 
         private void OnUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)

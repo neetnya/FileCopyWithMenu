@@ -58,7 +58,7 @@ namespace FileCopyWithMenu.Core
             return path;
         }
 
-        private static string Norm(string p)
+        internal static string Norm(string p)
         {
             if (string.IsNullOrEmpty(p))
                 return string.Empty;
@@ -74,6 +74,13 @@ namespace FileCopyWithMenu.Core
             return p.Replace('/', '\\').TrimEnd('\\').ToLowerInvariant();
         }
 
+        /// <summary>判断两个路径是否指向同一位置（规范化后忽略大小写和尾斜杠）。</summary>
+        public static bool IsSamePath(string a, string b)
+        {
+            string na = Norm(a), nb = Norm(b);
+            return na.Length > 0 && na == nb;
+        }
+
         /// <summary>child 是否位于 parent 之下（含自身）。</summary>
         public static bool IsWithin(string child, string parent)
         {
@@ -85,23 +92,23 @@ namespace FileCopyWithMenu.Core
             return c.StartsWith(p + "\\", StringComparison.Ordinal);
         }
 
-        /// <summary>取相对路径；跨盘符时退化为文件名。</summary>
+        /// <summary>取相对路径；跨盘符或等于根时退化为文件名（盘符根返回空串）。</summary>
         public static string RelativeTo(string fullPath, string root)
         {
             try
             {
                 string rel = Path.GetRelativePath(root, fullPath);
                 if (rel == "." || rel == ".." || rel.StartsWith("..\\") || rel.StartsWith("../") || Path.IsPathRooted(rel))
-                    return Path.GetFileName(fullPath);
+                    return Path.GetFileName(Short(fullPath).TrimEnd('\\'));
                 return rel;
             }
             catch
             {
-                return Path.GetFileName(fullPath);
+                return Path.GetFileName(Short(fullPath).TrimEnd('\\'));
             }
         }
 
-        /// <summary>去掉被其它选中目录包含的冗余项（先深后浅排序）。</summary>
+        /// <summary>去掉被其它选中目录包含的冗余项（先浅后深排序）。</summary>
         public static List<string> NormalizeSources(IEnumerable<string> sources)
         {
             var list = new List<string>(sources);
@@ -131,7 +138,7 @@ namespace FileCopyWithMenu.Core
 
         private static int Depth(string p)
         {
-            return Short(p).Split('\\').Length;
+            return Short(p).TrimEnd('\\').Split('\\').Length;
         }
 
         /// <summary>判断条目类型：目录 / 文件 / 链接（符号链接、联接点）。</summary>
@@ -165,6 +172,7 @@ namespace FileCopyWithMenu.Core
 
         public static string HumanSize(long bytes)
         {
+            if (bytes < 0) bytes = 0;
             string[] units = { "B", "KB", "MB", "GB", "TB", "PB" };
             double v = bytes;
             int i = 0;
@@ -174,6 +182,21 @@ namespace FileCopyWithMenu.Core
                 i++;
             }
             return i == 0 ? bytes + " B" : v.ToString("0.#") + " " + units[i];
+        }
+
+        public static string HumanSpeed(double bytesPerSecond)
+        {
+            if (bytesPerSecond <= 0 || double.IsNaN(bytesPerSecond) || double.IsInfinity(bytesPerSecond))
+                return "0 B/s";
+            string[] units = { "B/s", "KB/s", "MB/s", "GB/s" };
+            double v = bytesPerSecond;
+            int i = 0;
+            while (v >= 1024 && i < units.Length - 1)
+            {
+                v /= 1024;
+                i++;
+            }
+            return i == 0 ? ((long)v) + " B/s" : v.ToString("0.#") + " " + units[i];
         }
     }
 

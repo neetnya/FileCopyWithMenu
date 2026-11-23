@@ -4,15 +4,18 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace FileCopyWithMenu.Core
 {
-    /// <summary>树节点视图模型（按需懒加载子项）。</summary>
+    /// <summary>树节点视图模型（按需懒加载子项，支持异步加载并复用 FileSystemInfo）。</summary>
     public sealed class FileNode : INotifyPropertyChanged
     {
         private bool _isExpanded;
         private bool _isSelected;
         private bool _isCurrent;
+        private bool _isLoading;
 
         public string Name { get; private set; }
         public string FullPath { get; private set; }
@@ -59,7 +62,10 @@ namespace FileCopyWithMenu.Core
                 if (_isExpanded == value) return;
                 _isExpanded = value;
                 OnPropertyChanged();
-                if (value) LoadChildren();
+                if (value && !IsLoaded && !_isLoading)
+                {
+                    _ = LoadChildrenAsync();
+                }
             }
         }
 
@@ -89,38 +95,66 @@ namespace FileCopyWithMenu.Core
         public FileNode(string fullPath, FileNode parent)
         {
             FullPath = PathUtil.Short(fullPath);
-            Name = Path.GetFileName(FullPath);
+            Name = Path.GetFileName(FullPath.TrimEnd('\\'));
             if (string.IsNullOrEmpty(Name)) Name = FullPath;
             Parent = parent;
 
             try
             {
-                FileSystemInfo info = Directory.Exists(PathUtil.Long(FullPath))
-                    ? (FileSystemInfo)new DirectoryInfo(PathUtil.Long(FullPath))
-                    : new FileInfo(PathUtil.Long(FullPath));
+                string lp = PathUtil.Long(FullPath);
+                FileSystemInfo info = Directory.Exists(lp)
+                    ? (FileSystemInfo)new DirectoryInfo(lp)
+                    : new FileInfo(lp);
 
-                EntryKind kind = PathUtil.GetKind(info);
-                IsLink = kind == EntryKind.Link;
-                IsDirectory = kind == EntryKind.Directory || (IsLink && PathUtil.IsLinkToDirectory(FullPath));
-
-                if (!IsDirectory)
-                {
-                    var fi = info as FileInfo;
-                    if (fi != null)
-                    {
-                        _size = fi.Length;
-                        _modified = fi.LastWriteTime;
-                    }
-                }
+                long sz; DateTime mod; InitFromInfo(info, out sz, out mod); _size = sz; _modified = mod;
             }
             catch
             {
                 IsDirectory = false;
             }
 
-            // 只有真正含有内容的目录才挂占位子节点，这样空文件夹不会出现展开箭头
             if (IsDirectory && !IsLink && HasAnyEntry(FullPath))
                 Children.Add(new FileNode());
+        }
+
+        /// <summary>直接复用枚举得到的 FileSystemInfo，避免重复磁盘 stat。</summary>
+        private FileNode(FileSystemInfo info, FileNode parent)
+        {
+            FullPath = PathUtil.Short(info.FullName);
+            Name = info.Name;
+            if (string.IsNullOrEmpty(Name)) Name = FullPath;
+            Parent = parent;
+
+            try
+            {
+                long sz; DateTime mod; InitFromInfo(info, out sz, out mod); _size = sz; _modified = mod;
+            }
+            catch
+            {
+                IsDirectory = false;
+            }
+
+            if (IsDirectory && !IsLink && HasAnyEntry(FullPath))
+                Children.Add(new FileNode());
+        }
+
+        private void InitFromInfo(FileSystemInfo info, out long size, out DateTime modified)
+        {
+            size = 0;
+            modified = default;
+            EntryKind kind = PathUtil.GetKind(info);
+            IsLink = kind == EntryKind.Link;
+            IsDirectory = kind == EntryKind.Directory || (IsLink && PathUtil.IsLinkToDirectory(FullPath));
+
+            if (!IsDirectory)
+            {
+                var fi = info as FileInfo;
+                if (fi != null)
+                {
+                    size = fi.Length;
+                    modified = fi.LastWriteTime;
+                }
+            }
         }
 
         /// <summary>目录下是否至少有一个条目（只取第一个，开销极小）。</summary>
@@ -147,14 +181,72 @@ namespace FileCopyWithMenu.Core
             FullPath = string.Empty;
         }
 
-        /// <summary>读取磁盘，填充子节点。</summary>
+        /// <summary>同步读取磁盘并填充子节点（供定位/初始化使用）。</summary>
         public void LoadChildren()
         {
             if (IsLoaded) return;
             IsLoaded = true;
+            _isLoading = false;
             if (!IsDirectory || IsLink || IsPlaceholder) return;
 
-            Children.Clear();
+            string error;
+            List<FileNode> items = ScanChildren(out error);
+            ApplyChildren(items, error);
+        }
+
+        /// <summary>在后台线程读取磁盘，完成后回到 UI 线程填充子节点，避免展开大目录或网络盘时卡顿。</summary>
+        public async Task LoadChildrenAsync(CancellationToken ct = default)
+        {
+            if (IsLoaded || _isLoading) return;
+            if (!IsDirectory || IsLink || IsPlaceholder)
+            {
+                IsLoaded = true;
+                return;
+            }
+
+            _isLoading = true;
+            string error = null;
+            List<FileNode> items = null;
+
+            try
+            {
+                items = await Task.Run(() =>
+                {
+                    if (ct.IsCancellationRequested) return null;
+                    string err;
+                    var list = ScanChildren(out err);
+                    error = err;
+                    return list;
+                }, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                _isLoading = false;
+                return;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+            }
+
+            _isLoading = false;
+            if (ct.IsCancellationRequested || IsLoaded) return;
+
+            IsLoaded = true;
+            ApplyChildren(items, error);
+        }
+
+        /// <summary>强制重新加载当前节点的直接子项（例如新建文件夹后刷新局部）。</summary>
+        public void ReloadChildren()
+        {
+            IsLoaded = false;
+            _isLoading = false;
+            LoadChildren();
+        }
+
+        private List<FileNode> ScanChildren(out string error)
+        {
+            error = null;
             var dirs = new List<FileNode>();
             var links = new List<FileNode>();
             var files = new List<FileNode>();
@@ -165,36 +257,44 @@ namespace FileCopyWithMenu.Core
                 foreach (FileSystemInfo fsi in di.EnumerateFileSystemInfos())
                 {
                     EntryKind kind = PathUtil.GetKind(fsi);
-                    if (kind == EntryKind.Directory)
-                    {
-                        var node = new FileNode(fsi.FullName, this);
-                        if (node.IsLink) links.Add(node);
-                        else dirs.Add(node);
-                    }
-                    else if (kind == EntryKind.Link)
-                    {
-                        links.Add(new FileNode(fsi.FullName, this));
-                    }
+                    var node = new FileNode(fsi, this);
+                    if (kind == EntryKind.Directory && !node.IsLink)
+                        dirs.Add(node);
+                    else if (kind == EntryKind.Link || node.IsLink)
+                        links.Add(node);
                     else
-                    {
-                        files.Add(new FileNode(fsi.FullName, this));
-                    }
+                        files.Add(node);
                 }
             }
             catch (Exception ex)
             {
-                LoadError = ex.Message;
-                Children.Add(ErrorNode("⚠ 无法读取：" + ex.Message, this));
-                return;
+                error = ex.Message;
+                return null;
             }
 
             dirs.Sort(Compare);
             links.Sort(Compare);
             files.Sort(Compare);
 
-            foreach (FileNode n in dirs) Children.Add(n);
-            foreach (FileNode n in links) Children.Add(n);
-            foreach (FileNode n in files) Children.Add(n);
+            var all = new List<FileNode>(dirs.Count + links.Count + files.Count);
+            all.AddRange(dirs);
+            all.AddRange(links);
+            all.AddRange(files);
+            return all;
+        }
+
+        private void ApplyChildren(List<FileNode> items, string error)
+        {
+            Children.Clear();
+            if (!string.IsNullOrEmpty(error))
+            {
+                LoadError = error;
+                Children.Add(ErrorNode("⚠ 无法读取：" + error, this));
+                return;
+            }
+            LoadError = null;
+            if (items == null) return;
+            foreach (FileNode n in items) Children.Add(n);
         }
 
         private static int Compare(FileNode a, FileNode b)

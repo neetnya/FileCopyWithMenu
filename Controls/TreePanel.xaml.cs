@@ -17,7 +17,7 @@ using Microsoft.Win32;
 
 namespace FileCopyWithMenu.Controls
 {
-    /// <summary>一个支持多选、懒加载、全展开/全折叠的目录树面板。</summary>
+    /// <summary>一个支持多选、异步懒加载、拖放、全展开/全折叠的目录树面板。</summary>
     public partial class TreePanel : UserControl
     {
         private const int ExpandFolderCap = 40000;
@@ -29,8 +29,8 @@ namespace FileCopyWithMenu.Controls
         private FileNode _anchor;
         private FileNode _current;
         private CancellationTokenSource _countCts;
+        private CancellationTokenSource _expandCts;
         private bool _bulk;
-        private bool _expanding;
 
         public event EventHandler SelectionChanged;
         public event EventHandler CopyRequested;
@@ -76,7 +76,7 @@ namespace FileCopyWithMenu.Controls
         }
 
         // ================================================================= //
-        //  载入目录
+        //  载入目录 & 拖放
         // ================================================================= //
 
         public bool SetRoot(string path, bool silent = false)
@@ -97,24 +97,28 @@ namespace FileCopyWithMenu.Controls
                 return false;
             }
 
+            CancelExpand();
+            CancelCount();
+
             _bulk = true;
             ClearSelection();
             _bulk = false;
-            _countCts?.Cancel();
 
             _roots.Clear();
             _root = new FileNode(full, null);
+            _root.LoadChildren();
+            _root.IsExpanded = true;
             _roots.Add(_root);
             PathBox.Text = _root.FullPath;
             _current = null;
             _anchor = null;
-            _root.IsExpanded = true;
-            _root.LoadChildren();
+
             if (!string.IsNullOrEmpty(_root.LoadError))
                 SetInfo("读取失败：" + _root.LoadError);
             else
                 SetInfo("共 " + _root.Children.Count + " 项");
             ShowEmptyHint(false);
+            OnSelectionChanged();
             return true;
         }
 
@@ -123,7 +127,9 @@ namespace FileCopyWithMenu.Controls
         {
             if (show)
             {
-                EmptyHint.Text = IsSourcePanel ? "点【浏览…】选择源目录" : "点【浏览…】选择目标目录";
+                EmptyHint.Text = IsSourcePanel
+                    ? "点【浏览…】或拖入文件夹作为源目录"
+                    : "点【浏览…】或拖入文件夹作为目标目录";
                 EmptyHint.Visibility = Visibility.Visible;
             }
             else
@@ -143,7 +149,9 @@ namespace FileCopyWithMenu.Controls
         /// </summary>
         public void ClearRoot()
         {
-            _countCts?.Cancel();
+            CancelExpand();
+            CancelCount();
+
             _bulk = true;
             ClearSelection();
             _bulk = false;
@@ -155,6 +163,41 @@ namespace FileCopyWithMenu.Controls
             SetInfo("");
             ShowEmptyHint(true);
             UpdateSelectionInfo();
+        }
+
+        private void Panel_PreviewDragOver(object sender, DragEventArgs e)
+        {
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                string[] dropped = e.Data.GetData(DataFormats.FileDrop) as string[];
+                if (dropped != null && dropped.Length > 0 && Directory.Exists(PathUtil.Long(dropped[0])))
+                {
+                    e.Effects = DragDropEffects.Link;
+                    e.Handled = true;
+                    return;
+                }
+            }
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
+        }
+
+        private void Panel_Drop(object sender, DragEventArgs e)
+        {
+            if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+            string[] dropped = e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (dropped == null || dropped.Length == 0) return;
+
+            string target = dropped[0];
+            if (Directory.Exists(PathUtil.Long(target)))
+            {
+                SetRoot(target);
+            }
+            else if (File.Exists(PathUtil.Long(target)))
+            {
+                string parent = Path.GetDirectoryName(target);
+                if (!string.IsNullOrEmpty(parent)) SetRoot(parent);
+            }
+            e.Handled = true;
         }
 
         private void Browse_Click(object sender, RoutedEventArgs e)
@@ -177,8 +220,15 @@ namespace FileCopyWithMenu.Controls
         private void Up_Click(object sender, RoutedEventArgs e)
         {
             if (_root == null) return;
-            DirectoryInfo parent = Directory.GetParent(_root.FullPath);
-            if (parent != null) SetRoot(parent.FullName);
+            try
+            {
+                DirectoryInfo parent = Directory.GetParent(_root.FullPath);
+                if (parent != null) SetRoot(parent.FullName);
+            }
+            catch
+            {
+                // 已在根路径或不可访问时忽略
+            }
         }
 
         private void PathBox_KeyDown(object sender, KeyEventArgs e)
@@ -194,27 +244,48 @@ namespace FileCopyWithMenu.Controls
         //  展开 / 折叠
         // ================================================================= //
 
-        public async Task ExpandAllAsync()
+        public Task ExpandAllAsync()
         {
-            if (_root == null || _expanding) return;
-            _expanding = true;
+            if (_root == null) return Task.CompletedTask;
+            return ExpandNodesAsync(new[] { _root });
+        }
+
+        private async Task ExpandNodesAsync(IEnumerable<FileNode> startNodes)
+        {
+            CancelExpand();
+            var cts = new CancellationTokenSource();
+            _expandCts = cts;
+            CancellationToken ct = cts.Token;
+
             int loaded = 0;
             try
             {
                 var queue = new Queue<FileNode>();
-                queue.Enqueue(_root);
+                foreach (FileNode s in startNodes)
+                {
+                    if (s != null && !s.IsPlaceholder && s.IsDirectory && !s.IsLink)
+                        queue.Enqueue(s);
+                }
+
                 while (queue.Count > 0)
                 {
+                    if (ct.IsCancellationRequested) return;
+
                     FileNode n = queue.Dequeue();
                     if (n.IsPlaceholder || !n.IsDirectory || n.IsLink) continue;
 
-                    n.LoadChildren();
+                    await n.LoadChildrenAsync(ct);
+                    if (ct.IsCancellationRequested) return;
+
                     n.IsExpanded = true;
                     foreach (FileNode c in n.Children)
-                        if (!c.IsPlaceholder) queue.Enqueue(c);
+                    {
+                        if (!c.IsPlaceholder && c.IsDirectory && !c.IsLink)
+                            queue.Enqueue(c);
+                    }
                     loaded++;
 
-                    if (loaded % 80 == 0)
+                    if (loaded % 60 == 0)
                     {
                         SetInfo("正在展开 … 已加载 " + loaded + " 个文件夹");
                         await System.Windows.Threading.Dispatcher.Yield(DispatcherPriority.Background);
@@ -222,27 +293,37 @@ namespace FileCopyWithMenu.Controls
                     if (loaded >= ExpandFolderCap)
                     {
                         SetInfo("已展开 " + loaded + " 个文件夹，达到上限后停止");
-                        _expanding = false;
                         return;
                     }
                 }
-                SetInfo("已展开全部 " + loaded + " 个文件夹");
+                if (!ct.IsCancellationRequested)
+                    SetInfo("已展开 " + loaded + " 个文件夹");
+            }
+            catch (OperationCanceledException)
+            {
+                return;
             }
             finally
             {
-                _expanding = false;
+                if (_expandCts == cts)
+                {
+                    _expandCts = null;
+                }
+                cts.Dispose();
             }
-            UpdateSelectionInfo();
+
+            if (!ct.IsCancellationRequested)
+                UpdateSelectionInfo();
         }
 
         public void CollapseAll()
         {
             if (_root == null) return;
+            CancelExpand();
             _bulk = true;
             foreach (FileNode n in VisibleNodes())
                 if (n != _root && n.IsDirectory) n.IsExpanded = false;
             _bulk = false;
-            // 已展开但不再可见的深层节点也一并折叠
             CollapseRecursive(_root, true);
             _root.IsExpanded = true;
             UpdateSelectionInfo();
@@ -266,6 +347,26 @@ namespace FileCopyWithMenu.Controls
         private void CollapseAll_Click(object sender, RoutedEventArgs e)
         {
             CollapseAll();
+        }
+
+        private void CancelExpand()
+        {
+            if (_expandCts != null)
+            {
+                try { _expandCts.Cancel(); } catch { }
+                try { _expandCts.Dispose(); } catch { }
+                _expandCts = null;
+            }
+        }
+
+        private void CancelCount()
+        {
+            if (_countCts != null)
+            {
+                try { _countCts.Cancel(); } catch { }
+                try { _countCts.Dispose(); } catch { }
+                _countCts = null;
+            }
         }
 
         // ================================================================= //
@@ -325,7 +426,7 @@ namespace FileCopyWithMenu.Controls
         {
             _bulk = true;
             ClearSelection();
-            if (n != null)
+            if (n != null && !n.IsPlaceholder)
             {
                 _selected.Add(n);
                 n.IsSelected = true;
@@ -374,7 +475,6 @@ namespace FileCopyWithMenu.Controls
             if (i1 < 0 || i2 < 0)
             {
                 SelectSingle(n);
-                OnSelectionChanged();
                 return;
             }
             _bulk = true;
@@ -382,7 +482,6 @@ namespace FileCopyWithMenu.Controls
             int a = Math.Min(i1, i2), b = Math.Max(i1, i2);
             for (int i = a; i <= b; i++) AddSelection(visible[i]);
             _bulk = false;
-            OnSelectionChanged();
         }
 
         private void SetCurrent(FileNode n)
@@ -397,39 +496,43 @@ namespace FileCopyWithMenu.Controls
             EventHandler h = SelectionChanged;
             if (h != null) h(this, EventArgs.Empty);
 
-            _countCts?.Cancel();
+            CancelCount();
 
-            List<string> paths = SelectedPaths();
-            if (paths.Count == 0)
+            List<string> rawPaths = SelectedPaths();
+            if (rawPaths.Count == 0)
             {
                 UpdateSelectionInfo();
                 return;
             }
 
+            // 按实际复制规则去重后再统计，避免父子同时选中导致重复计算
+            List<string> normalized = PathUtil.NormalizeSources(rawPaths);
+
             var cts = new CancellationTokenSource();
             _countCts = cts;
             CancellationToken token = cts.Token;
-            int n = paths.Count;
+            int displayCount = rawPaths.Count;
 
-            SetInfo("已选 " + n + " 项 · 统计中 …");
+            SetInfo("已选 " + displayCount + " 项 · 统计中 …");
 
             Task.Run(() =>
             {
                 long dirs = 0, files = 0, bytes = 0;
-                foreach (string p in paths)
+                foreach (string p in normalized)
                 {
                     if (token.IsCancellationRequested) return;
                     try
                     {
-                        if (Directory.Exists(PathUtil.Long(p)))
+                        string lp = PathUtil.Long(p);
+                        if (Directory.Exists(lp))
                         {
                             dirs++;
                             CountTree(p, ref dirs, ref files, ref bytes, token);
                         }
-                        else if (File.Exists(PathUtil.Long(p)))
+                        else if (File.Exists(lp))
                         {
                             files++;
-                            try { bytes += new FileInfo(PathUtil.Long(p)).Length; } catch { }
+                            try { bytes += new FileInfo(lp).Length; } catch { }
                         }
                     }
                     catch
@@ -442,7 +545,7 @@ namespace FileCopyWithMenu.Controls
                 {
                     if (token.IsCancellationRequested) return;
                     SetInfo(string.Format("已选 {0} 项（{1} 文件夹 / {2} 文件，合计 {3}）",
-                        n, dirs, files, PathUtil.HumanSize(bytes)));
+                        displayCount, dirs, files, PathUtil.HumanSize(bytes)));
                 }), DispatcherPriority.Background);
             }, token);
         }
@@ -474,6 +577,12 @@ namespace FileCopyWithMenu.Controls
                             stack.Push(fsi.FullName);
                             break;
                         case EntryKind.Link:
+                            // 与 CopyEngine 保持一致：目录链接跳过，文件链接按文件计入
+                            if (!PathUtil.IsLinkToDirectory(fsi.FullName))
+                            {
+                                files++;
+                                try { bytes += new FileInfo(PathUtil.Long(fsi.FullName)).Length; } catch { }
+                            }
                             break;
                         default:
                             files++;
@@ -528,8 +637,11 @@ namespace FileCopyWithMenu.Controls
             }
 
             ModifierKeys mods = Keyboard.Modifiers;
-            if ((mods & ModifierKeys.Control) != 0) ToggleSelection(node);
-            else if ((mods & ModifierKeys.Shift) != 0) SelectRangeTo(node, (mods & ModifierKeys.Control) != 0);
+            bool ctrl = (mods & ModifierKeys.Control) != 0;
+            bool shift = (mods & ModifierKeys.Shift) != 0;
+
+            if (shift) SelectRangeTo(node, ctrl);
+            else if (ctrl) ToggleSelection(node);
             else SelectSingle(node);
 
             SetCurrent(node);
@@ -581,8 +693,19 @@ namespace FileCopyWithMenu.Controls
             }
             else if (e.Key == Key.Left)
             {
-                if (_current != null && _current.IsDirectory && _current.IsExpanded && !_current.IsLink)
-                    _current.IsExpanded = false;
+                if (_current != null)
+                {
+                    if (_current.IsDirectory && _current.IsExpanded && !_current.IsLink)
+                    {
+                        _current.IsExpanded = false;
+                    }
+                    else if (_current.Parent != null)
+                    {
+                        SelectNode(_current.Parent);
+                        SetCurrent(_current.Parent);
+                        EnsureVisible(_current);
+                    }
+                }
                 e.Handled = true;
             }
         }
@@ -619,19 +742,49 @@ namespace FileCopyWithMenu.Controls
             FileNode n = list[next];
             SetCurrent(n);
             SelectRangeTo(n, true);
+            OnSelectionChanged();
             EnsureVisible(n);
         }
 
+        /// <summary>沿祖先链逐层定位 TreeViewItem 并滚动到可见区域（支持任意深层子节点）。</summary>
         private void EnsureVisible(FileNode node)
         {
             if (node == null) return;
-            var item = Tree.ItemContainerGenerator.ContainerFromItem(node) as TreeViewItem;
-            if (item == null)
+
+            var chain = new Stack<FileNode>();
+            FileNode p = node;
+            while (p != null)
             {
-                Tree.UpdateLayout();
-                item = Tree.ItemContainerGenerator.ContainerFromItem(node) as TreeViewItem;
+                chain.Push(p);
+                p = p.Parent;
             }
-            if (item != null) item.BringIntoView();
+
+            ItemsControl containerParent = Tree;
+            TreeViewItem targetItem = null;
+
+            while (chain.Count > 0 && containerParent != null)
+            {
+                FileNode cur = chain.Pop();
+                containerParent.ApplyTemplate();
+                containerParent.UpdateLayout();
+
+                TreeViewItem item = containerParent.ItemContainerGenerator.ContainerFromItem(cur) as TreeViewItem;
+                if (item == null)
+                {
+                    if (containerParent is TreeViewItem parentTvi)
+                        parentTvi.BringIntoView();
+                    containerParent.UpdateLayout();
+                    item = containerParent.ItemContainerGenerator.ContainerFromItem(cur) as TreeViewItem;
+                }
+
+                if (item == null) break;
+                item.BringIntoView();
+                targetItem = item;
+                containerParent = item;
+            }
+
+            if (targetItem != null)
+                targetItem.BringIntoView();
         }
 
         /// <summary>展开到指定路径并选中它。</summary>
@@ -640,10 +793,18 @@ namespace FileCopyWithMenu.Controls
             if (_root == null || string.IsNullOrEmpty(target)) return false;
             if (!PathUtil.IsWithin(target, _root.FullPath)) return false;
 
+            if (PathUtil.IsSamePath(target, _root.FullPath))
+            {
+                SelectNode(_root);
+                SetCurrent(_root);
+                EnsureVisible(_root);
+                return true;
+            }
+
             string rel = PathUtil.RelativeTo(target, _root.FullPath);
             FileNode cur = _root;
-            cur.IsExpanded = true;
             cur.LoadChildren();
+            cur.IsExpanded = true;
 
             foreach (string seg in rel.Split('\\'))
             {
@@ -654,8 +815,11 @@ namespace FileCopyWithMenu.Controls
                     if (string.Equals(c.Name, seg, StringComparison.OrdinalIgnoreCase)) { next = c; break; }
                 }
                 if (next == null) break;
-                next.IsExpanded = true;
-                next.LoadChildren();
+                if (next.IsDirectory && !next.IsLink)
+                {
+                    next.LoadChildren();
+                    next.IsExpanded = true;
+                }
                 cur = next;
             }
 
@@ -678,13 +842,10 @@ namespace FileCopyWithMenu.Controls
                 return;
             }
             if (!_selected.Contains(node)) SelectNode(node);
-            ContextMenu menu = Tree.ContextMenu;
-            if (menu != null && menu.Items.Count > 0)
-            {
-                var copyItem = menu.Items[0] as MenuItem;
-                if (copyItem != null)
-                    copyItem.Visibility = IsSourcePanel ? Visibility.Visible : Visibility.Collapsed;
-            }
+
+            Visibility vis = IsSourcePanel ? Visibility.Visible : Visibility.Collapsed;
+            if (MiCopy != null) MiCopy.Visibility = vis;
+            if (MiCopySep != null) MiCopySep.Visibility = vis;
         }
 
         private FileNode NodeAtMouse()
@@ -709,28 +870,100 @@ namespace FileCopyWithMenu.Controls
             }
         }
 
-        private void MiExpandSubtree_Click(object sender, RoutedEventArgs e)
+        private async void MiExpandSubtree_Click(object sender, RoutedEventArgs e)
         {
-            foreach (FileNode n in SelectedNodes)
+            List<FileNode> targets = SelectedNodes
+                .Where(n => n != null && !n.IsPlaceholder && n.IsDirectory && !n.IsLink)
+                .ToList();
+            if (targets.Count > 0)
+                await ExpandNodesAsync(targets);
+        }
+
+        private void MiNewFolder_Click(object sender, RoutedEventArgs e)
+        {
+            FileNode target = _selected.FirstOrDefault(n => !n.IsPlaceholder) ?? _root;
+            if (target == null) return;
+
+            FileNode parentDir = (target.IsDirectory && !target.IsLink) ? target : target.Parent;
+            if (parentDir == null) return;
+
+            string folderName = PromptFolderName(parentDir.FullPath);
+            if (string.IsNullOrWhiteSpace(folderName)) return;
+
+            folderName = folderName.Trim();
+            if (folderName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
             {
-                if (n.IsDirectory && !n.IsLink)
-                {
-                    n.IsExpanded = true;
-                    ExpandRecursive(n, 0);
-                }
+                MessageBox.Show("文件夹名称包含非法字符。", "FileCopyWithMenu",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            string newPath = Path.Combine(parentDir.FullPath, folderName);
+            try
+            {
+                Directory.CreateDirectory(PathUtil.Long(newPath));
+                parentDir.ReloadChildren();
+                parentDir.IsExpanded = true;
+                RevealPath(newPath);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("新建文件夹失败：\n" + ex.Message, "FileCopyWithMenu",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
 
-        private void ExpandRecursive(FileNode n, int depth)
+        private string PromptFolderName(string parentPath)
         {
-            if (depth > 64) return;
-            n.LoadChildren();
-            n.IsExpanded = true;
-            foreach (FileNode c in n.Children)
+            var dlg = new Window
             {
-                if (c.IsPlaceholder || !c.IsDirectory || c.IsLink) continue;
-                ExpandRecursive(c, depth + 1);
-            }
+                Title = "新建文件夹",
+                Width = 380,
+                Height = 155,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                ResizeMode = ResizeMode.NoResize,
+                ShowInTaskbar = false,
+                Owner = Window.GetWindow(this),
+                Background = (Brush)TryFindResource("AppBgBrush") ?? Brushes.White
+            };
+
+            var root = new Grid { Margin = new Thickness(14) };
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+            var label = new TextBlock
+            {
+                Text = "在 " + parentPath + " 下新建：",
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new Thickness(0, 0, 0, 8),
+                ToolTip = parentPath
+            };
+            Grid.SetRow(label, 0);
+
+            var box = new TextBox { Text = "新建文件夹", Margin = new Thickness(0, 0, 0, 12) };
+            Grid.SetRow(box, 1);
+
+            var btnPanel = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right
+            };
+            var okBtn = new Button { Content = "确定", Width = 72, IsDefault = true, Margin = new Thickness(0, 0, 8, 0) };
+            var cancelBtn = new Button { Content = "取消", Width = 72, IsCancel = true };
+            okBtn.Click += (s, args) => { dlg.DialogResult = true; };
+            btnPanel.Children.Add(okBtn);
+            btnPanel.Children.Add(cancelBtn);
+            Grid.SetRow(btnPanel, 2);
+
+            root.Children.Add(label);
+            root.Children.Add(box);
+            root.Children.Add(btnPanel);
+            dlg.Content = root;
+
+            dlg.Loaded += (s, args) => { box.Focus(); box.SelectAll(); };
+
+            return dlg.ShowDialog() == true ? box.Text : null;
         }
 
         private void MiOpen_Click(object sender, RoutedEventArgs e)
